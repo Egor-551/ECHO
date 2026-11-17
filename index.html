@@ -1,0 +1,302 @@
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>ECHO</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080b14;color:white;font-family:Arial,sans-serif;overflow:hidden;touch-action:none}
+canvas{display:block;width:100vw;height:100dvh}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+(()=>{
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+let W,H;
+function resize(){
+ const d=Math.min(devicePixelRatio||1,2);
+ W=innerWidth;H=innerHeight;
+ canvas.width=W*d;canvas.height=H*d;
+ ctx.setTransform(d,0,0,d,0,0);
+}
+addEventListener("resize",resize);resize();
+
+const skins=[
+ ["Basic",0,"#72ffc7"],
+ ["Apprentice",20,"#31dfff"],
+ ["Knight",50,"#ffffff"],
+ ["Wizard",100,"#b56aff"],
+ ["Dragon",200,"#ff713b"],
+ ["Void",400,"#b5b5d9"],
+ ["Cosmic",800,"#477cff"]
+];
+let saved={};
+try{saved=JSON.parse(localStorage.getItem("echoSave")||"{}")}catch(e){}
+let gems=saved.gems||0,best=saved.best||0;
+let owned=saved.owned||[true,false,false,false,false,false,false];
+let equipped=saved.equipped||0;
+let state="menu",frame=0,score=0,seed=1;
+let player,shadows=[],history=[],spikes=[],crystals=[];
+let generated=0,lastShadow=0,camera=0,deadAt=0;
+let particles=[];
+let selected=0;
+
+function save(){
+ try{localStorage.setItem("echoSave",JSON.stringify({gems,best,owned,equipped}))}catch(e){}
+}
+function rand(){
+ seed=(seed*1664525+1013904223)>>>0;
+ return seed/4294967296;
+}
+function start(){
+ seed=(Date.now()^Math.floor(Math.random()*999999))>>>0;
+ frame=0;score=0;camera=0;generated=0;
+ shadows=[];history=[];spikes=[];crystals=[];particles=[];
+ player={x:0,y:100,vx:0,vy:0,wall:0,on:true};
+ player.x= W/2- W/2+18;
+ player.y=100;
+ lastShadow=0;
+ state="play";
+ generate();
+}
+function generate(){
+ while(generated<player.y+H+900){
+  let room=generated;
+  generated+=180;
+  if(room<500)continue;
+  let type=rand();
+  if(type<.43){
+   let side=rand()<.5?0:1;
+   spikes.push({side,y:room+80+rand()*65});
+  }else if(type<.60){
+   spikes.push({side:0,y:room+55});
+   spikes.push({side:1,y:room+125});
+  }else if(type<.82){
+   let side=rand()<.5?0:1;
+   for(let j=0;j<3;j++)crystals.push({x:side?W-35:35,y:room+45+j*35,value:j===2?10:3,got:false});
+  }else if(type<.92){
+   crystals.push({x:W/2,y:room+90,value:3,got:false});
+  }
+ }
+}
+function jump(){
+ if(state==="dead"){
+  if(performance.now()-deadAt>150)start();
+  return;
+ }
+ if(state!=="play")return;
+ if(!player.on)return;
+ player.on=false;
+ player.vx=player.wall===0?9.5:-9.5;
+ player.vy=13;
+}
+function die(){
+ if(state!=="play")return;
+ state="dead";deadAt=performance.now();
+ best=Math.max(best,Math.floor(score));
+ save();
+}
+function overlap(a,b){
+ return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
+}
+function addParticle(x,y,color){
+ particles.push({x,y,vx:(rand()-.5)*3,vy:(rand()-.5)*3,life:25,color});
+}
+function update(){
+ if(state!=="play")return;
+ frame++;
+ const p=player;
+ if(p.on){
+  p.vx=0;p.vy=-2.2;
+  p.y+=p.vy;
+ }else{
+  p.x+=p.vx;
+  p.y+=p.vy;
+  p.vy-=.6;
+  const wallX=p.wall===0?W-18:18;
+  if((p.wall===0&&p.x>=wallX-22)||(p.wall===1&&p.x<=wallX)){
+   p.x=wallX;
+   p.on=true;p.wall=1-p.wall;
+   p.vx=0;p.vy=0;
+   for(let i=0;i<8;i++)addParticle(p.x,p.y,skins[equipped][2]);
+  }
+ }
+ if(p.y<camera)camera=p.y;
+ if(p.y<camera-H/2-40)die();
+ if(p.y< -100)die();
+
+ history.push({side:p.wall,x:p.x,y:p.y});
+ if(history.length>1300)history.shift();
+
+ if(frame-lastShadow>=180){
+  lastShadow=frame;
+  if(shadows.length<6){
+   shadows.push({y:p.y-20,x:p.wall===0?18:W-40,side:p.wall, born:frame,drift:62+Math.min(score/500,30),alive:true});
+  }
+ }
+ for(let s of shadows){
+  s.y+=s.drift/60;
+  let index=frame-(120+Math.floor(shadows.indexOf(s))*180);
+  let past=history[Math.max(0,history.length-1-(120+Math.floor(shadows.indexOf(s))*180))];
+  if(past){
+   let target=past.side;
+   if(target!==s.side){
+    s.side=target;
+    s.x=target===0?18:W-40;
+   }
+  }
+  s.x=s.side===0?18:W-40;
+  if(s.y>camera+H)s.alive=false;
+  if(Math.abs(s.y-p.y)<24&&Math.abs(s.x-p.x)<25)die();
+ }
+ shadows=shadows.filter(s=>s.alive);
+
+ for(let s of spikes){
+  let sy=H/2-(s.y-camera);
+  if(sy> -80&&sy<H+80){
+   let sx=s.side===0?0:W-20;
+   if(overlap({x:p.x,y:H/2-13,w:22,h:26},{x:sx,y:sy-11,w:20,h:22}))die();
+  }
+ }
+ for(let c of crystals){
+  if(c.got)continue;
+  let sx=c.x,sy=H/2-(c.y-camera);
+  if(overlap({x:p.x,y:H/2-13,w:22,h:26},{x:sx-9,y:sy-9,w:18,h:18})){
+   c.got=true;gems+=c.value;score+=c.value;
+   save();
+   for(let i=0;i<8;i++)addParticle(sx,sy,"#ffd85b");
+  }
+ }
+ crystals=crystals.filter(c=>!c.got&&c.y>camera-H-100);
+ spikes=spikes.filter(s=>s.y>camera-H-100);
+ generate();
+ score=Math.max(score,Math.floor((p.y-100)/12));
+ for(let a of particles){
+  a.x+=a.vx;a.y+=a.vy;a.life--;
+ }
+ particles=particles.filter(a=>a.life>0);
+}
+function text(t,x,y,size=20,color="white",align="center"){
+ ctx.fillStyle=color;ctx.font=`bold ${size}px Arial`;ctx.textAlign=align;ctx.fillText(t,x,y);
+}
+function button(t,x,y,w,h,fn){
+ ctx.fillStyle="#202c43";
+ ctx.beginPath();ctx.roundRect(x,y,w,h,14);ctx.fill();
+ ctx.strokeStyle="#506789";ctx.lineWidth=1.5;ctx.stroke();
+ text(t,x+w/2,y+h/2+7,19);
+}
+function draw(){
+ ctx.clearRect(0,0,W,H);
+ let bg=ctx.createLinearGradient(0,0,0,H);
+ bg.addColorStop(0,"#101a31");bg.addColorStop(1,"#080b14");
+ ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+ if(state==="menu"){drawMenu();return}
+ if(state==="shop"){drawShop();return}
+ ctx.strokeStyle="#35435c";ctx.lineWidth=3;
+ ctx.beginPath();ctx.moveTo(18,0);ctx.lineTo(18,H);ctx.moveTo(W-18,0);ctx.lineTo(W-18,H);ctx.stroke();
+
+ for(let y=0;y<H;y+=90){
+  let wy=camera+H/2-y;
+  ctx.strokeStyle="#ffffff0b";
+  ctx.beginPath();ctx.moveTo(20,y);ctx.lineTo(W-20,y);ctx.stroke();
+ }
+ for(let s of spikes){
+  let y=H/2-(s.y-camera);
+  let x=s.side===0?18:W-18;
+  if(y< -40||y>H+40)continue;
+  ctx.fillStyle="#ff465e";ctx.shadowColor="#ff263d";ctx.shadowBlur=14;
+  ctx.beginPath();
+  if(s.side===0){ctx.moveTo(x,y-11);ctx.lineTo(x+20,y);ctx.lineTo(x,y+11)}
+  else{ctx.moveTo(x,y-11);ctx.lineTo(x-20,y);ctx.lineTo(x,y+11)}
+  ctx.closePath();ctx.fill();ctx.shadowBlur=0;
+ }
+ for(let c of crystals){
+  let y=H/2-(c.y-camera);
+  if(y< -30||y>H+30)continue;
+  ctx.fillStyle="#ffd85b";ctx.shadowColor="#ffd85b";ctx.shadowBlur=18;
+  ctx.beginPath();ctx.moveTo(c.x,y-10);ctx.lineTo(c.x+9,y);ctx.lineTo(c.x,y+10);ctx.lineTo(c.x-9,y);ctx.closePath();ctx.fill();ctx.shadowBlur=0;
+ }
+ for(let s of shadows){
+  let y=H/2-(s.y-camera);
+  let x=s.side===0?18:W-40;
+  ctx.fillStyle="#8b74ff35";ctx.shadowColor="#9475ff";ctx.shadowBlur=25;
+  ctx.fillRect(x-5,y-5,32,36);
+  ctx.fillStyle="#a99aff";ctx.fillRect(x,y,22,26);ctx.shadowBlur=0;
+ }
+ for(let a of particles){
+  ctx.globalAlpha=a.life/25;ctx.fillStyle=a.color;
+  ctx.fillRect(a.x,a.y,4,4);ctx.globalAlpha=1;
+ }
+ let color=skins[equipped][2];
+ ctx.shadowColor=color;ctx.shadowBlur=22;
+ ctx.fillStyle=color;
+ ctx.fillRect(player.x,H/2-13,22,26);
+ ctx.shadowBlur=0;
+ text("ECHO",W/2,35,17,"#a9bad5");
+ text("Высота: "+Math.max(0,Math.floor((player.y-100)/12))+" м",W/2,62,15);
+ text("◆ "+gems, W-30,35,17,"#ffd85b","right");
+ if(state==="dead"){
+  ctx.fillStyle="#000b";ctx.fillRect(0,0,W,H);
+  text("ТЫ ПОГИБ",W/2,H/2-60,34);
+  text("Счёт: "+Math.floor(score),W/2,H/2-20,20);
+  text("Нажми, чтобы начать заново",W/2,H/2+45,17,"#ffd85b");
+ }
+}
+function drawMenu(){
+ text("E C H O",W/2,H*.25,48,"#8fffd4");
+ text("THE SHADOW CLIMB",W/2,H*.25+35,13,"#8295b7");
+ text("Рекорд: "+best,W/2,H*.42,19);
+ text("◆ "+gems+" кристаллов",W/2,H*.42+35,19,"#ffd85b");
+ button("ИГРАТЬ",W*.15,H*.55,W*.7,60,()=>start());
+ button("МАГАЗИН",W*.15,H*.55+78,W*.7,55,()=>state="shop");
+ text("Прыгай между стенами • избегай шипов",W/2,H*.85,13,"#a5b3c9");
+}
+function drawShop(){
+ text("МАГАЗИН",W/2,65,30);
+ text("◆ "+gems,W/2,100,18,"#ffd85b");
+ for(let i=0;i<skins.length;i++){
+  let y=135+i*75;
+  if(y>H-100)break;
+  ctx.fillStyle=i===selected?"#283a58":"#151e30";
+  ctx.fillRect(20,y,W-40,63);
+  ctx.fillStyle=skins[i][2];ctx.fillRect(35,y+17,27,27);
+  text(skins[i][0],78,y+27,16,"white","left");
+  text(owned[i]?(equipped===i?"НАДЕТ":"КУПЛЕНО"):skins[i][1]+" ◆",W-45,y+37,14,"#ffd85b","right");
+ }
+ button("НАЗАД",W*.15,H-75,W*.7,50,()=>state="menu");
+}
+function pointer(e){
+ let x=e.clientX,y=e.clientY;
+ if(state==="menu"){
+  if(y>H*.53&&y<H*.53+75)start();
+  else if(y>H*.53+75&&y<H*.53+145)state="shop";
+ }else if(state==="shop"){
+  if(y>H-90){state="menu";return}
+  let i=Math.floor((y-135)/75);
+  if(i>=0&&i<skins.length){
+   selected=i;
+   if(owned[i])equipped=i;
+   else if(gems>=skins[i][1]){
+    gems-=skins[i][1];owned[i]=true;equipped=i;save();
+   }
+  }
+ }else if(state==="dead"){jump()}
+ else jump();
+}
+canvas.addEventListener("pointerdown",e=>{e.preventDefault();pointer(e)});
+function loop(){
+ let steps=0;
+ if(state==="play")update();
+ draw();
+ requestAnimationFrame(loop);
+}
+loop();
+})();
+</script>
+</body>
+</html>
