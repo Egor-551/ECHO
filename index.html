@@ -1,301 +1,203 @@
-
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru">
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>ECHO</title>
 <style>
 *{box-sizing:border-box}
-body{margin:0;background:#080b14;color:white;font-family:Arial,sans-serif;overflow:hidden;touch-action:none}
-canvas{display:block;width:100vw;height:100dvh}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#070914;color:#fff;font-family:Arial,sans-serif;touch-action:manipulation}
+canvas{display:block;width:100vw;height:100dvh;background:#090d1b}
+#ui{position:fixed;inset:0;pointer-events:none}
+button{pointer-events:auto;border:1px solid #5966a8;background:#171d38;color:#fff;border-radius:14px;padding:13px 22px;font-size:17px;font-weight:bold}
+.panel{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:linear-gradient(#080b19dd,#10152add);text-align:center;padding:24px}
+h1{font-size:58px;letter-spacing:12px;margin:0;color:#9ceaff;text-shadow:0 0 22px #36cfff}
+.sub{color:#aab5dc;max-width:300px;line-height:1.5}
+.hidden{display:none}
+#hud{position:absolute;top:14px;left:14px;right:14px;display:flex;justify-content:space-between;font-weight:bold}
+#hint{position:absolute;bottom:20px;left:0;right:0;text-align:center;color:#b7c3e9;font-size:13px}
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
+<div id="ui">
+<div id="hud" class="hidden"><span id="score">0 м</span><span id="gems">◇ 0</span></div>
+<div id="menu" class="panel">
+<h1>ECHO</h1>
+<div class="sub">Прыгай между стенами. Собирай кристаллы. Не дай теням догнать тебя.</div>
+<div>Рекорд: <b id="best">0</b> м　◇ <b id="bank">0</b></div>
+<button id="play">ИГРАТЬ</button>
+<button id="shopBtn">МАГАЗИН</button>
+<div class="sub">Нажми на экран, чтобы прыгнуть на другую стену.</div>
+</div>
+<div id="shop" class="panel hidden">
+<h1 style="font-size:38px">МАГАЗИН</h1>
+<div id="shopInfo" class="sub"></div>
+<button id="buy">Купить / выбрать</button>
+<button id="back">НАЗАД</button>
+</div>
+<div id="over" class="panel hidden">
+<h1 style="font-size:42px">ПРОИГРЫШ</h1>
+<div id="result" class="sub"></div>
+<button id="again">ЗАНОВО</button>
+<button id="home">МЕНЮ</button>
+</div>
+<div id="hint" class="hidden">Нажми в любой части экрана, чтобы прыгнуть</div>
+</div>
 <script>
 (()=>{
-const canvas=document.getElementById("game");
-const ctx=canvas.getContext("2d");
-let W,H;
+const c=document.getElementById('game'),ctx=c.getContext('2d');
+let W,H,scale=1;
 function resize(){
- const d=Math.min(devicePixelRatio||1,2);
- W=innerWidth;H=innerHeight;
- canvas.width=W*d;canvas.height=H*d;
- ctx.setTransform(d,0,0,d,0,0);
+W=c.width=innerWidth*devicePixelRatio;
+H=c.height=innerHeight*devicePixelRatio;
+scale=devicePixelRatio;
+ctx.setTransform(scale,0,0,scale,0,0)
 }
-addEventListener("resize",resize);resize();
-
-const skins=[
- ["Basic",0,"#72ffc7"],
- ["Apprentice",20,"#31dfff"],
- ["Knight",50,"#ffffff"],
- ["Wizard",100,"#b56aff"],
- ["Dragon",200,"#ff713b"],
- ["Void",400,"#b5b5d9"],
- ["Cosmic",800,"#477cff"]
-];
-let saved={};
-try{saved=JSON.parse(localStorage.getItem("echoSave")||"{}")}catch(e){}
-let gems=saved.gems||0,best=saved.best||0;
-let owned=saved.owned||[true,false,false,false,false,false,false];
-let equipped=saved.equipped||0;
-let state="menu",frame=0,score=0,seed=1;
-let player,shadows=[],history=[],spikes=[],crystals=[];
-let generated=0,lastShadow=0,camera=0,deadAt=0;
-let particles=[];
-let selected=0;
-
-function save(){
- try{localStorage.setItem("echoSave",JSON.stringify({gems,best,owned,equipped}))}catch(e){}
-}
-function rand(){
- seed=(seed*1664525+1013904223)>>>0;
- return seed/4294967296;
+addEventListener('resize',resize);resize();
+const $=id=>document.getElementById(id);
+const load=(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}};
+const save=(k,v)=>localStorage.setItem(k,JSON.stringify(v));
+let best=load('echoBest',0),bank=load('echoGems',0),skin=load('echoSkin',0),owned=load('echoOwned',[0]),state='menu';
+const skins=[['Basic',0],['Apprentice',20],['Knight',50],['Wizard',100],['Dragon',200],['Void',400],['Cosmic',800]];
+let p,shadows,spikes,gems,dist,runGems,frame,last=0,acc=0,side=1;
+function show(s){
+state=s;
+['menu','shop','over'].forEach(x=>$(x).classList.toggle('hidden',x!==s));
+$('hud').classList.toggle('hidden',s!=='play');
+$('hint').classList.toggle('hidden',s!=='play')
 }
 function start(){
- seed=(Date.now()^Math.floor(Math.random()*999999))>>>0;
- frame=0;score=0;camera=0;generated=0;
- shadows=[];history=[];spikes=[];crystals=[];particles=[];
- player={x:0,y:100,vx:0,vy:0,wall:0,on:true};
- player.x= W/2- W/2+18;
- player.y=100;
- lastShadow=0;
- state="play";
- generate();
+p={x:side>0?W/scale-28:8,y:H/scale*.65,vx:0,vy:0,jump:false};
+side=1;shadows=[];spikes=[];gems=[];
+dist=0;runGems=0;frame=0;acc=0;
+makeWorld();show('play')
 }
-function generate(){
- while(generated<player.y+H+900){
-  let room=generated;
-  generated+=180;
-  if(room<500)continue;
-  let type=rand();
-  if(type<.43){
-   let side=rand()<.5?0:1;
-   spikes.push({side,y:room+80+rand()*65});
-  }else if(type<.60){
-   spikes.push({side:0,y:room+55});
-   spikes.push({side:1,y:room+125});
-  }else if(type<.82){
-   let side=rand()<.5?0:1;
-   for(let j=0;j<3;j++)crystals.push({x:side?W-35:35,y:room+45+j*35,value:j===2?10:3,got:false});
-  }else if(type<.92){
-   crystals.push({x:W/2,y:room+90,value:3,got:false});
-  }
- }
+function makeWorld(){
+let y=-100;
+for(let i=0;i<12;i++){
+let yy=y-i*180;
+if(i>2){
+if(i%3!==0)spikes.push({y:yy,x:i%2?0:W/scale-25,h:36});
+if(i%2===0)gems.push({y:yy-65,x:W/scale/2,r:8,got:false})
 }
-function jump(){
- if(state==="dead"){
-  if(performance.now()-deadAt>150)start();
-  return;
- }
- if(state!=="play")return;
- if(!player.on)return;
- player.on=false;
- player.vx=player.wall===0?9.5:-9.5;
- player.vy=13;
+}
+}function jump(){
+if(state!=='play')return;
+if(!p.jump){p.vx=-side*10.5;p.vy=-1;p.jump=true}
+}
+addEventListener('pointerdown',e=>{if(state==='play')jump()});
+function tick(){
+if(state!=='play')return;
+frame++;dist+=.8;p.y-=.8;
+if(p.jump){
+p.x+=p.vx;p.y+=p.vy;p.vy+=.42;
+if((side===1&&p.x<8)||(side===-1&&p.x>W/scale-30)){
+side*=-1;p.x=side===1?W/scale-28:8;
+p.vx=0;p.vy=0;p.jump=false
+}
+}else{
+p.x=side===1?W/scale-28:8;p.y-=.55
+}
+if(frame%210===0&&shadows.length<6)
+shadows.push({x:side===1?8:W/scale-28,y:p.y+250,side:side===1?-1:1,speed:1.05+Math.random()*.5});
+shadows.forEach(s=>{
+s.y-=s.speed;s.x=s.side===1?W/scale-28:8;
+if(Math.abs(s.x-p.x)<24&&Math.abs(s.y-p.y)<25)die()
+});
+spikes.forEach(o=>{
+let sy=H/scale*.65-(o.y-dist);
+if(sy>0&&sy<H/scale&&p.x<o.x+25&&p.x+20>o.x&&Math.abs(p.y-H/scale*.65)<45)die()
+});
+gems.forEach(g=>{
+let gy=H/scale*.65-(g.y-dist);
+if(!g.got&&Math.abs(gy-H/scale*.65)<24&&Math.abs(g.x-p.x)<30){
+g.got=true;runGems++;bank++;save('echoGems',bank)
+}
+});
+if(frame%220===0)makeWorld();
+$('score').textContent=Math.floor(dist/10)+' м';
+$('gems').textContent='◇ '+runGems
 }
 function die(){
- if(state!=="play")return;
- state="dead";deadAt=performance.now();
- best=Math.max(best,Math.floor(score));
- save();
-}
-function overlap(a,b){
- return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
-}
-function addParticle(x,y,color){
- particles.push({x,y,vx:(rand()-.5)*3,vy:(rand()-.5)*3,life:25,color});
-}
-function update(){
- if(state!=="play")return;
- frame++;
- const p=player;
- if(p.on){
-  p.vx=0;p.vy=-2.2;
-  p.y+=p.vy;
- }else{
-  p.x+=p.vx;
-  p.y+=p.vy;
-  p.vy-=.6;
-  const wallX=p.wall===0?W-18:18;
-  if((p.wall===0&&p.x>=wallX-22)||(p.wall===1&&p.x<=wallX)){
-   p.x=wallX;
-   p.on=true;p.wall=1-p.wall;
-   p.vx=0;p.vy=0;
-   for(let i=0;i<8;i++)addParticle(p.x,p.y,skins[equipped][2]);
-  }
- }
- if(p.y<camera)camera=p.y;
- if(p.y<camera-H/2-40)die();
- if(p.y< -100)die();
-
- history.push({side:p.wall,x:p.x,y:p.y});
- if(history.length>1300)history.shift();
-
- if(frame-lastShadow>=180){
-  lastShadow=frame;
-  if(shadows.length<6){
-   shadows.push({y:p.y-20,x:p.wall===0?18:W-40,side:p.wall, born:frame,drift:62+Math.min(score/500,30),alive:true});
-  }
- }
- for(let s of shadows){
-  s.y+=s.drift/60;
-  let index=frame-(120+Math.floor(shadows.indexOf(s))*180);
-  let past=history[Math.max(0,history.length-1-(120+Math.floor(shadows.indexOf(s))*180))];
-  if(past){
-   let target=past.side;
-   if(target!==s.side){
-    s.side=target;
-    s.x=target===0?18:W-40;
-   }
-  }
-  s.x=s.side===0?18:W-40;
-  if(s.y>camera+H)s.alive=false;
-  if(Math.abs(s.y-p.y)<24&&Math.abs(s.x-p.x)<25)die();
- }
- shadows=shadows.filter(s=>s.alive);
-
- for(let s of spikes){
-  let sy=H/2-(s.y-camera);
-  if(sy> -80&&sy<H+80){
-   let sx=s.side===0?0:W-20;
-   if(overlap({x:p.x,y:H/2-13,w:22,h:26},{x:sx,y:sy-11,w:20,h:22}))die();
-  }
- }
- for(let c of crystals){
-  if(c.got)continue;
-  let sx=c.x,sy=H/2-(c.y-camera);
-  if(overlap({x:p.x,y:H/2-13,w:22,h:26},{x:sx-9,y:sy-9,w:18,h:18})){
-   c.got=true;gems+=c.value;score+=c.value;
-   save();
-   for(let i=0;i<8;i++)addParticle(sx,sy,"#ffd85b");
-  }
- }
- crystals=crystals.filter(c=>!c.got&&c.y>camera-H-100);
- spikes=spikes.filter(s=>s.y>camera-H-100);
- generate();
- score=Math.max(score,Math.floor((p.y-100)/12));
- for(let a of particles){
-  a.x+=a.vx;a.y+=a.vy;a.life--;
- }
- particles=particles.filter(a=>a.life>0);
-}
-function text(t,x,y,size=20,color="white",align="center"){
- ctx.fillStyle=color;ctx.font=`bold ${size}px Arial`;ctx.textAlign=align;ctx.fillText(t,x,y);
-}
-function button(t,x,y,w,h,fn){
- ctx.fillStyle="#202c43";
- ctx.beginPath();ctx.roundRect(x,y,w,h,14);ctx.fill();
- ctx.strokeStyle="#506789";ctx.lineWidth=1.5;ctx.stroke();
- text(t,x+w/2,y+h/2+7,19);
+if(state!=='play')return;
+best=Math.max(best,Math.floor(dist/10));
+save('echoBest',best);
+$('result').textContent='Результат: '+Math.floor(dist/10)+' м · Кристаллы: '+runGems;
+show('over')
 }
 function draw(){
- ctx.clearRect(0,0,W,H);
- let bg=ctx.createLinearGradient(0,0,0,H);
- bg.addColorStop(0,"#101a31");bg.addColorStop(1,"#080b14");
- ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
- if(state==="menu"){drawMenu();return}
- if(state==="shop"){drawShop();return}
- ctx.strokeStyle="#35435c";ctx.lineWidth=3;
- ctx.beginPath();ctx.moveTo(18,0);ctx.lineTo(18,H);ctx.moveTo(W-18,0);ctx.lineTo(W-18,H);ctx.stroke();
-
- for(let y=0;y<H;y+=90){
-  let wy=camera+H/2-y;
-  ctx.strokeStyle="#ffffff0b";
-  ctx.beginPath();ctx.moveTo(20,y);ctx.lineTo(W-20,y);ctx.stroke();
- }
- for(let s of spikes){
-  let y=H/2-(s.y-camera);
-  let x=s.side===0?18:W-18;
-  if(y< -40||y>H+40)continue;
-  ctx.fillStyle="#ff465e";ctx.shadowColor="#ff263d";ctx.shadowBlur=14;
-  ctx.beginPath();
-  if(s.side===0){ctx.moveTo(x,y-11);ctx.lineTo(x+20,y);ctx.lineTo(x,y+11)}
-  else{ctx.moveTo(x,y-11);ctx.lineTo(x-20,y);ctx.lineTo(x,y+11)}
-  ctx.closePath();ctx.fill();ctx.shadowBlur=0;
- }
- for(let c of crystals){
-  let y=H/2-(c.y-camera);
-  if(y< -30||y>H+30)continue;
-  ctx.fillStyle="#ffd85b";ctx.shadowColor="#ffd85b";ctx.shadowBlur=18;
-  ctx.beginPath();ctx.moveTo(c.x,y-10);ctx.lineTo(c.x+9,y);ctx.lineTo(c.x,y+10);ctx.lineTo(c.x-9,y);ctx.closePath();ctx.fill();ctx.shadowBlur=0;
- }
- for(let s of shadows){
-  let y=H/2-(s.y-camera);
-  let x=s.side===0?18:W-40;
-  ctx.fillStyle="#8b74ff35";ctx.shadowColor="#9475ff";ctx.shadowBlur=25;
-  ctx.fillRect(x-5,y-5,32,36);
-  ctx.fillStyle="#a99aff";ctx.fillRect(x,y,22,26);ctx.shadowBlur=0;
- }
- for(let a of particles){
-  ctx.globalAlpha=a.life/25;ctx.fillStyle=a.color;
-  ctx.fillRect(a.x,a.y,4,4);ctx.globalAlpha=1;
- }
- let color=skins[equipped][2];
- ctx.shadowColor=color;ctx.shadowBlur=22;
- ctx.fillStyle=color;
- ctx.fillRect(player.x,H/2-13,22,26);
- ctx.shadowBlur=0;
- text("ECHO",W/2,35,17,"#a9bad5");
- text("Высота: "+Math.max(0,Math.floor((player.y-100)/12))+" м",W/2,62,15);
- text("◆ "+gems, W-30,35,17,"#ffd85b","right");
- if(state==="dead"){
-  ctx.fillStyle="#000b";ctx.fillRect(0,0,W,H);
-  text("ТЫ ПОГИБ",W/2,H/2-60,34);
-  text("Счёт: "+Math.floor(score),W/2,H/2-20,20);
-  text("Нажми, чтобы начать заново",W/2,H/2+45,17,"#ffd85b");
- }
+let w=W/scale,h=H/scale;
+ctx.clearRect(0,0,w,h);
+let grad=ctx.createLinearGradient(0,0,0,h);
+grad.addColorStop(0,'#090d20');grad.addColorStop(1,'#15112b');
+ctx.fillStyle=grad;ctx.fillRect(0,0,w,h);
+ctx.strokeStyle='#28345c';ctx.lineWidth=4;
+ctx.beginPath();ctx.moveTo(5,0);ctx.lineTo(5,h);
+ctx.moveTo(w-5,0);ctx.lineTo(w-5,h);ctx.stroke();
+if(state==='play'){
+spikes.forEach(o=>{
+let y=h*.65-(o.y-dist);
+if(y>-60&&y<h+60){
+ctx.fillStyle='#fa537f';ctx.beginPath();
+let x=o.x;ctx.moveTo(x,y);ctx.lineTo(x+25,y-38);
+ctx.lineTo(x+50,y);ctx.fill()
 }
-function drawMenu(){
- text("E C H O",W/2,H*.25,48,"#8fffd4");
- text("THE SHADOW CLIMB",W/2,H*.25+35,13,"#8295b7");
- text("Рекорд: "+best,W/2,H*.42,19);
- text("◆ "+gems+" кристаллов",W/2,H*.42+35,19,"#ffd85b");
- button("ИГРАТЬ",W*.15,H*.55,W*.7,60,()=>start());
- button("МАГАЗИН",W*.15,H*.55+78,W*.7,55,()=>state="shop");
- text("Прыгай между стенами • избегай шипов",W/2,H*.85,13,"#a5b3c9");
+});
+gems.forEach(g=>{
+let y=h*.65-(g.y-dist);
+if(!g.got&&y>-20&&y<h+20){
+ctx.fillStyle='#70f5ff';ctx.shadowColor='#43eaff';ctx.shadowBlur=15;
+ctx.beginPath();ctx.arc(g.x,y,g.r,0,Math.PI*2);ctx.fill();
+ctx.shadowBlur=0
 }
-function drawShop(){
- text("МАГАЗИН",W/2,65,30);
- text("◆ "+gems,W/2,100,18,"#ffd85b");
- for(let i=0;i<skins.length;i++){
-  let y=135+i*75;
-  if(y>H-100)break;
-  ctx.fillStyle=i===selected?"#283a58":"#151e30";
-  ctx.fillRect(20,y,W-40,63);
-  ctx.fillStyle=skins[i][2];ctx.fillRect(35,y+17,27,27);
-  text(skins[i][0],78,y+27,16,"white","left");
-  text(owned[i]?(equipped===i?"НАДЕТ":"КУПЛЕНО"):skins[i][1]+" ◆",W-45,y+37,14,"#ffd85b","right");
- }
- button("НАЗАД",W*.15,H-75,W*.7,50,()=>state="menu");
+});
+shadows.forEach(s=>{
+let y=h*.65-(s.y-dist);
+ctx.fillStyle='#8b64ff';ctx.shadowColor='#7650ff';ctx.shadowBlur=22;
+ctx.beginPath();ctx.arc(s.x+10,y+13,14,0,Math.PI*2);ctx.fill();
+ctx.shadowBlur=0
+});
+ctx.fillStyle=['#9ceaff','#e4bdff','#c5d2ff','#d6a5ff','#ff9c6a','#9c75ff','#fff0a0'][skin];
+ctx.shadowColor=ctx.fillStyle;ctx.shadowBlur=18;
+ctx.fillRect(p.x,p.y,20,26);ctx.shadowBlur=0
 }
-function pointer(e){
- let x=e.clientX,y=e.clientY;
- if(state==="menu"){
-  if(y>H*.53&&y<H*.53+75)start();
-  else if(y>H*.53+75&&y<H*.53+145)state="shop";
- }else if(state==="shop"){
-  if(y>H-90){state="menu";return}
-  let i=Math.floor((y-135)/75);
-  if(i>=0&&i<skins.length){
-   selected=i;
-   if(owned[i])equipped=i;
-   else if(gems>=skins[i][1]){
-    gems-=skins[i][1];owned[i]=true;equipped=i;save();
-   }
-  }
- }else if(state==="dead"){jump()}
- else jump();
 }
-canvas.addEventListener("pointerdown",e=>{e.preventDefault();pointer(e)});
-function loop(){
- let steps=0;
- if(state==="play")update();
- draw();
- requestAnimationFrame(loop);
+function loop(t){
+let dt=Math.min(.05,(t-last)/1000||0);last=t;
+if(state==='play'){
+acc+=dt;
+while(acc>=1/60){tick();acc-=1/60}
 }
-loop();
+draw();requestAnimationFrame(loop)
+}
+requestAnimationFrame(loop);
+$('play').onclick=start;
+$('again').onclick=start;
+$('home').onclick=()=>{
+$('best').textContent=best;$('bank').textContent=bank;show('menu')
+};
+$('shopBtn').onclick=()=>{updateShop();show('shop')};
+$('back').onclick=()=>show('menu');
+function updateShop(){
+let [name,cost]=skins[skin];
+$('shopInfo').textContent=name+' — '+(cost?'◇ '+cost:'БЕСПЛАТНО')+' · У тебя ◇ '+bank;
+$('buy').textContent=owned.includes(skin)?'ВЫБРАТЬ':'КУПИТЬ';
+}
+$('buy').onclick=()=>{
+let cost=skins[skin][1];
+if(!owned.includes(skin)){
+if(bank<cost){$('shopInfo').textContent='Недостаточно кристаллов';return}
+bank-=cost;owned.push(skin);save('echoGems',bank);save('echoOwned',owned)
+}
+save('echoSkin',skin);updateShop()
+};
+$('shop').addEventListener('click',e=>{
+if(e.target.id==='shop'||e.target.id==='shopInfo'){
+skin=(skin+1)%skins.length;updateShop()
+}
+});
+$('best').textContent=best;$('bank').textContent=bank;
 })();
 </script>
 </body>
